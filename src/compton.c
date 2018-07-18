@@ -1503,7 +1503,7 @@ win_blur_background(session_t *ps, win *w, Picture tgt_buffer,
     case BKEND_GLX:
       // TODO: Handle frame opacity
       glx_blur_dst(ps, x, y, wid, hei, ps->psglx->z - 0.5, factor_center,
-          reg_paint, pcache_reg, &w->glx_blur_cache);
+          reg_paint, pcache_reg);
       break;
 #endif
     default:
@@ -6597,6 +6597,7 @@ init_filters(session_t *ps) {
         {
           if (!glx_init_blur(ps))
             return false;
+          break;
         }
 #endif
       default:

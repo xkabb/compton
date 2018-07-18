@@ -795,6 +795,9 @@ typedef struct {
   /// FBConfig-s for GLX pixmap of different depths.
   glx_fbconfig_t *fbconfigs[OPENGL_MAX_DEPTH + 1];
 #ifdef CONFIG_VSYNC_OPENGL_GLSL
+  /// Cached blur textures for every pass
+  glx_blur_cache_t blur_cache;
+  /// Blur shader for every pass
   glx_blur_pass_t blur_passes[MAX_BLUR_PASS];
 #endif
 } glx_session_t;
@@ -1227,11 +1230,6 @@ typedef struct _win {
   bool blur_background;
   /// Background state on last paint.
   bool blur_background_last;
-
-#ifdef CONFIG_VSYNC_OPENGL_GLSL
-  /// Textures and FBO background blur use.
-  glx_blur_cache_t glx_blur_cache;
-#endif
 } win;
 
 /// Temporary structure used for communication between
@@ -2198,8 +2196,7 @@ glx_set_clip(session_t *ps, XserverRegion reg, const reg_data_t *pcache_reg);
 bool
 glx_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
     GLfloat factor_center,
-    XserverRegion reg_tgt, const reg_data_t *pcache_reg,
-    glx_blur_cache_t *pbc);
+    XserverRegion reg_tgt, const reg_data_t *pcache_reg);
 #endif
 
 bool
@@ -2331,9 +2328,6 @@ static inline void
 free_win_res_glx(session_t *ps, win *w) {
   free_paint_glx(ps, &w->paint);
   free_paint_glx(ps, &w->shadow_paint);
-#ifdef CONFIG_VSYNC_OPENGL_GLSL
-  free_glx_bc(ps, &w->glx_blur_cache);
-#endif
 }
 
 /**
