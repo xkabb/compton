@@ -1205,11 +1205,19 @@ glx_gen_texture(session_t *ps, GLenum tex_tgt, int width, int height) {
 }
 
 static inline void
-glx_copy_region_to_tex(session_t *ps, GLenum tex_tgt, int basex, int basey,
-    int dx, int dy, int width, int height) {
-  if (width > 0 && height > 0)
-    glCopyTexSubImage2D(tex_tgt, 0, dx - basex, dy - basey,
-        dx, ps->root_height - dy - height, width, height);
+glx_copy_region_to_tex(session_t *ps, GLenum tex_tgt, int basex, int basey, int width, int height) {
+  if (width > 0 && height > 0) {
+    int dx = (basex < 0) ? 0 : basex;
+    basey = ps->root_height - (basey + height);
+    int dy = (basey < 0) ? 0 : basey;
+
+    width += basex;
+    width = (ps->root_width < width) ? ps->root_width - dx : width - dx;
+    height += basey;
+    height = (ps->root_height < height) ? ps->root_height - dy : height - dy;
+
+    glCopyTexSubImage2D(tex_tgt, 0, (basex < 0) ? 0 : dx, dy, dx, dy, width, height);
+  }
 }
 
 #ifdef CONFIG_VSYNC_OPENGL_GLSL
@@ -1255,6 +1263,10 @@ glx_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
   }
   */
 
+  GLenum tex_tgt = GL_TEXTURE_RECTANGLE;
+  if (ps->psglx->has_texture_non_power_of_two)
+    tex_tgt = GL_TEXTURE_2D;
+
   // Check for FBO and textures if needed
   GLuint tex_scr = pbc->textures[0];
   GLuint tex_scr2 = pbc->textures[1];
@@ -1273,14 +1285,10 @@ glx_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
   }
 #endif
 
-  GLenum tex_tgt = GL_TEXTURE_RECTANGLE;
-  if (ps->psglx->has_texture_non_power_of_two)
-    tex_tgt = GL_TEXTURE_2D;
-
   // Read destination pixels into a texture
   glEnable(tex_tgt);
   glBindTexture(tex_tgt, tex_scr);
-  glx_copy_region_to_tex(ps, tex_tgt, mdx, mdy, mdx, mdy, mwidth, mheight);
+  glx_copy_region_to_tex(ps, tex_tgt, mdx, mdy, mwidth, mheight);
   /*
   if (tex_scr2) {
     glBindTexture(tex_tgt, tex_scr2);
@@ -1346,21 +1354,14 @@ glx_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
     {
       P_PAINTREG_START();
       {
-        GLfloat rdx = crect.x - mdx;
-        GLfloat rdy = mheight - (crect.y - mdy);
+        GLfloat rdx = crect.x;
+        GLfloat rdy = ps->root_height - (crect.y + crect.height);
         GLfloat rdxe = rdx + crect.width;
-        GLfloat rdye = rdy - crect.height;
+        GLfloat rdye = rdy + crect.height;
         const GLfloat rx = rdx * texfac_x;
         const GLfloat ry = rdy * texfac_y;
         const GLfloat rxe = rx + crect.width * texfac_x;
-        const GLfloat rye = ry - crect.height * texfac_y;
-
-        if (last_pass) {
-          rdx = crect.x;
-          rdy = ps->root_height - crect.y;
-          rdxe = rdx + crect.width;
-          rdye = rdy - crect.height;
-        }
+        const GLfloat rye = ry + crect.height * texfac_y;
 
 #ifdef DEBUG_GLX
         printf_dbgf("(): %f, %f, %f, %f -> %f, %f, %f, %f\n", rx, ry, rxe, rye, rdx, rdy, rdxe, rdye);
