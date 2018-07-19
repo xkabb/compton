@@ -7078,7 +7078,7 @@ session_init(session_t *ps_old, int argc, char **argv) {
       .blur_background_blacklist = NULL,
       .blur_method = BLRMTHD_CONV,
       .blur_kerns = { NULL },
-      .blur_strength = { .iterations = 3, .offset = 2.75 },
+      .blur_strength = { .iterations = 3, .offset = 2.75, .expand = 50 },
       .inactive_dim = 0.0,
       .inactive_dim_fixed = false,
       .invert_color_list = NULL,

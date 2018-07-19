@@ -1678,14 +1678,15 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
 
   int iterations = ps->o.blur_strength.iterations;
   float offset = ps->o.blur_strength.offset;
-
-  glx_blur_cache_t *psbc = &ps->psglx->blur_cache;
+  int expand = ps->o.blur_strength.expand;
 
   // Calculate copy region size
+  int mdx = dx - expand, mdy = dy - expand, mwidth = width + 2 * expand, mheight = height + 2 * expand;
 #ifdef DEBUG_GLX
-  int mdx = dx, mdy = dy, mwidth = width, mheight = height;
   printf_dbgf("(): %d, %d, %d, %d\n", mdx, mdy, mwidth, mheight);
 #endif
+
+  glx_blur_cache_t *psbc = &ps->psglx->blur_cache;
 
   GLenum tex_tgt = GL_TEXTURE_RECTANGLE;
   if (ps->psglx->has_texture_non_power_of_two)
@@ -1703,15 +1704,13 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
     goto glx_dualkawase_blur_dst_end;
   }
 
+#ifdef CONFIG_VSYNC_OPENGL_FBO
   for (int i = 1; i <= iterations; i++) {
     if (!psbc->textures[i]) {
       printf_errf("(): Blur cache texture not allocated.");
       goto glx_dualkawase_blur_dst_end;
     }
-  }
-#ifdef CONFIG_VSYNC_OPENGL_FBO
-  for (int i = 0; i < iterations - 1; i++) {
-    if (!psbc->fbos[i]) {
+    if (!psbc->fbos[i - 1]) {
       printf_errf("(): Blur cache framebuffer not allocated.");
       goto glx_dualkawase_blur_dst_end;
     }
@@ -1721,8 +1720,7 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
   // Read destination pixels into a texture
   glEnable(tex_tgt);
   glBindTexture(tex_tgt, tex_scr);
-  //glx_copy_region_to_tex(ps, tex_tgt, mdx, mdy, mwidth, mheight);
-  glx_copy_region_to_tex(ps, tex_tgt, 0, 0, ps->root_width, ps->root_height);
+  glx_copy_region_to_tex(ps, tex_tgt, mdx, mdy, mwidth, mheight);
 
   // Paint it back
   glDisable(GL_STENCIL_TEST);
@@ -1730,17 +1728,14 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
 
 #ifdef CONFIG_VSYNC_OPENGL_FBO
   // First pass: Kawase Downsample
+  const glx_blur_pass_t *down_pass = &ps->psglx->blur_passes[0];
   for (int i = 1; i <= iterations; i++) {
-    const glx_blur_pass_t *down_pass = &ps->psglx->blur_passes[0];
-    assert(down_pass->prog);
-
-    int dest_width = psbc->width[i], dest_height = psbc->height[i];
-    assert(i > 0);
+    const int dest_width = psbc->width[i], dest_height = psbc->height[i];
     GLuint tex_src2 = psbc->textures[i - 1];
     GLuint fbo = psbc->fbos[i - 1];
 
-    assert(tex_src2);
-    assert(fbo);
+    //assert(tex_src2);
+    //assert(fbo);
     glBindTexture(tex_tgt, tex_src2);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
@@ -1756,6 +1751,9 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
     // Start actual rendering
     P_PAINTREG_START();
     {
+      crect.x -= expand; crect.y -= expand;
+      crect.width += 2 * expand; crect.height += 2 * expand;
+
       const GLfloat rx = crect.x;
       const GLfloat ry = ps->root_height - crect.y;
       const GLfloat rxe = rx + crect.width;
@@ -1786,20 +1784,17 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
 #endif
 
   // Second pass: Kawase Upsample
+  const glx_blur_pass_t *up_pass = &ps->psglx->blur_passes[1];
   for (int i = iterations; i >= 1; i--) {
-    const glx_blur_pass_t *up_pass = &ps->psglx->blur_passes[1];
-    assert(up_pass->prog);
-
-    int dest_width = psbc->width[i - 1], dest_height = psbc->height[i - 1];
+    const int dest_width = psbc->width[i - 1], dest_height = psbc->height[i - 1];
     GLuint tex_src2 = psbc->textures[i];
-    assert(tex_src2);
+    //assert(tex_src2);
     glBindTexture(tex_tgt, tex_src2);
 
 #ifdef CONFIG_VSYNC_OPENGL_FBO
     if (i != 1) { // is not last pass
-      assert(i > 1);
       GLuint fbo = psbc->fbos[i - 2];
-      assert(fbo);
+      //assert(fbo);
       glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     } else { // last pass -> render to screen
       static const GLenum DRAWBUFS[2] = { GL_BACK };
@@ -1824,14 +1819,26 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
     // Start actual rendering
     P_PAINTREG_START();
     {
-      const GLfloat rx = crect.x;
-      const GLfloat ry = ps->root_height - (crect.y + crect.height);
-      const GLfloat rxe = rx + crect.width;
-      const GLfloat rye = ry + crect.height;
-      GLfloat rdx = rx / (1 << (i-1));
-      GLfloat rdy = ry / (1 << (i-1));
-      GLfloat rdxe = rxe / (1 << (i-1));
-      GLfloat rdye = rye / (1 << (i-1));
+      const GLfloat rx = crect.x - expand;
+      const GLfloat ry = ps->root_height - (crect.y + crect.height) - expand;
+      const GLfloat rxe = rx + crect.width + 2 * expand;
+      const GLfloat rye = ry + crect.height + 2 * expand;
+      GLfloat rdx;
+      GLfloat rdy;
+      GLfloat rdxe;
+      GLfloat rdye;
+
+      if (i != 1) { // is not last pass
+        rdx = rx / (1 << (i-1));
+        rdy = ry / (1 << (i-1));
+        rdxe = rxe / (1 << (i-1));
+        rdye = rye / (1 << (i-1));
+      } else { // last pass -> render to screen coordinates
+        rdx = crect.x;
+        rdy = ps->root_height - (crect.y + crect.height);
+        rdxe = rdx + crect.width;
+        rdye = rdy + crect.height;
+      }
 
 #ifdef DEBUG_GLX
       printf_dbgf("(): Upsample Pass %d: %f, %f, %f, %f -> %f, %f, %f, %f\n", i, rx, ry, rxe, rye, rdx, rdy, rdxe, rdye);
