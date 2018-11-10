@@ -47,6 +47,7 @@ const char * const VSYNC_STRS[NUM_VSYNC + 1] = {
 const char * const BLUR_METHOD_STRS[NUM_BLRMTHD + 1] = {
     "convolution",    // BLRMTHD_CONV
     "dual_kawase",    // BLRMTHD_DUALKAWASE
+    "pixelate",       // BLRMTHD_PIXEL
     NULL
 };
 
@@ -6130,6 +6131,11 @@ get_cfg(session_t *ps, int argc, char *const *argv, bool first_pass) {
   // Blur method dual_kawase is not compatible with the xrender backend
   if (ps->o.backend != BKEND_GLX && ps->o.blur_method == BLRMTHD_DUALKAWASE) {
       printf_errf("(): Blur method 'dual_kawase' is incompatible with the XRender backend. Fall back to default.\n");
+      ps->o.blur_method = BLRMTHD_CONV;
+  }
+  // Blur method pixelate is not compatible with the xrender backend
+  if (ps->o.backend != BKEND_GLX && ps->o.blur_method == BLRMTHD_PIXEL) {
+      printf_errf("(): Blur method 'pixelate' is incompatible with the XRender backend. Fall back to default.\n");
       ps->o.blur_method = BLRMTHD_CONV;
   }
 

@@ -356,6 +356,7 @@ typedef enum {
 enum blur_method {
     BLRMTHD_CONV,
     BLRMTHD_DUALKAWASE,
+    BLRMTHD_PIXEL,
     NUM_BLRMTHD,
 };
 

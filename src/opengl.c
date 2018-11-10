@@ -807,6 +807,155 @@ glx_init_dualkawase_blur(session_t *ps) {
 
   return true;
 }
+
+/**
+ * Initialize GLX blur filter for the pixelate 'blur'.
+ */
+bool
+glx_init_pixelate_blur(session_t *ps) {
+
+  // Allocate textures if needed and bind to the respective framebuffer
+  {
+    GLenum tex_tgt = GL_TEXTURE_RECTANGLE;
+    if (ps->psglx->has_texture_non_power_of_two)
+      tex_tgt = GL_TEXTURE_2D;
+
+    // Allocate scaled texture
+    glx_blur_cache_t *pbc = &ps->psglx->blur_cache;
+
+    if (!pbc->textures[0]) {
+      pbc->textures[0] = glx_gen_texture(ps, tex_tgt, ps->root_width, ps->root_height);
+      pbc->width[0] = ps->root_width;
+      pbc->height[0] = ps->root_height;
+    }
+
+    if (!pbc->textures[0]) {
+      printf_errf("(): Failed to allocate texture.");
+      return false;
+    }
+  }
+
+  // Compile pixelate shader
+  {
+    char *lc_numeric_old = mstrcpy(setlocale(LC_NUMERIC, NULL));
+    // Enforce LC_NUMERIC locale "C" here to make sure decimal point is sane
+    // Thanks to hiciu for reporting.
+    setlocale(LC_NUMERIC, "C");
+
+    static const char *FRAG_SHADER_PREFIX =
+      "#version 110\n"
+      "%s"  // extensions
+      "uniform float offset;\n"
+      "uniform vec2 fulltex;\n"
+      "uniform %s tex_scr;\n" // sampler2D | sampler2DRect
+      "\n"
+      "vec4 clamp_tex(vec2 uv)\n"
+      "{\n"
+      "  return %s(tex_scr, clamp(uv, vec2(0), fulltex));\n" // texture2D | texture2DRect
+      "}\n"
+      "\n"
+      "void main()\n"
+      "{\n"
+      "  vec2 uv = (gl_FragCoord.xy / fulltex);\n"
+      "\n"
+      "  float dx = 1.0 / offset;\n"
+      "  float ar = fulltex.x / fulltex.y;\n"
+      "  float dy = ar / offset;\n"
+      "\n"
+      "  vec2 sample_uv = vec2(floor(uv.x / dx) * dx,\n"
+      "                        floor(uv.y / dy) * dy);\n";
+
+    // Fragment shader (Pixelate) - low resolution
+    static const char *FRAG_SHADER_PIXELATE_HIGH =
+      "  vec2 uv_1 = vec2(dx, dy) / 3.0;\n"
+      "  vec2 uv_2 = vec2(dx, dy) * 2.0 / 3.0;\n"
+      "\n"
+      "  vec4 sum = clamp_tex(sample_uv);\n"
+      "  sum += clamp_tex(sample_uv + uv_1);\n"
+      "  sum += clamp_tex(sample_uv + vec2(uv_1.x,      0));\n"
+      "  sum += clamp_tex(sample_uv + vec2(     0, uv_1.y));\n"
+      "  sum += clamp_tex(sample_uv + uv_2);\n"
+      "  sum += clamp_tex(sample_uv + vec2(uv_2.x,      0));\n"
+      "  sum += clamp_tex(sample_uv + vec2(     0, uv_2.y));\n"
+      "  sum += clamp_tex(sample_uv + vec2(uv_1.x, uv_2.y));\n"
+      "  sum += clamp_tex(sample_uv + vec2(uv_2.x, uv_1.y));\n"
+      "  gl_FragColor = sum / 9.0;\n"
+      "}\n";
+
+    // Fragment shader (Pixelate) - high resolution
+    static const char *FRAG_SHADER_PIXELATE_LOW =
+      "\n"
+      "  vec4 sum = clamp_tex(sample_uv);\n"
+      "  sum += clamp_tex(sample_uv + vec2(dx / 2.0, dy / 2.0));\n"
+      "  sum += clamp_tex(sample_uv + vec2(dx / 2.0,        0));\n"
+      "  sum += clamp_tex(sample_uv + vec2(       0, dy / 2.0));\n"
+      "  gl_FragColor = sum / 4.0;\n"
+      "}\n";
+
+    const bool use_texture_rect = !ps->psglx->has_texture_non_power_of_two;
+    const char *sampler_type = (use_texture_rect ?
+        "sampler2DRect": "sampler2D");
+    const char *texture_func = (use_texture_rect ?
+        "texture2DRect": "texture2D");
+    char *extension = mstrcpy("");
+    if (use_texture_rect)
+      mstrextend(&extension, "#extension GL_ARB_texture_rectangle : require\n");
+
+    // Build pixelate shader
+    glx_blur_pass_t *pixel_pass = &ps->psglx->blur_passes[0];
+    {
+      int len = strlen(FRAG_SHADER_PREFIX) + strlen(extension) + strlen(sampler_type) + strlen(texture_func) + max_i(strlen(FRAG_SHADER_PIXELATE_HIGH), strlen(FRAG_SHADER_PIXELATE_LOW)) + 1;
+      char *shader_str = calloc(len, sizeof(char));
+      if (!shader_str) {
+        printf_errf("(): Failed to allocate %d bytes for shader string.", len);
+        return false;
+      }
+
+      char *pc = shader_str;
+      sprintf(pc, FRAG_SHADER_PREFIX, extension, sampler_type, texture_func);
+      pc += strlen(pc);
+      assert(strlen(shader_str) < len);
+
+      sprintf(pc, FRAG_SHADER_PIXELATE_HIGH);
+      assert(strlen(shader_str) < len);
+      pixel_pass->frag_shader = glx_create_shader(GL_FRAGMENT_SHADER, shader_str);
+      free(shader_str);
+
+      if (!pixel_pass->frag_shader) {
+        printf_errf("(): Failed to create pixelate fragment shader.");
+        return false;
+      }
+
+      // Build program
+      pixel_pass->prog = glx_create_program(&pixel_pass->frag_shader, 1);
+      if (!pixel_pass->prog) {
+        printf_errf("(): Failed to create GLSL program.");
+        return false;
+      }
+
+      // Get uniform addresses
+#define P_GET_UNIFM_LOC(name, target) { \
+      pixel_pass->target = glGetUniformLocation(pixel_pass->prog, name); \
+      if (pixel_pass->target < 0) { \
+        printf_errf("(): Failed to get location of pixelate uniform '" name "'. Might be troublesome."); \
+      } \
+    }
+      P_GET_UNIFM_LOC("offset", unifm_offset);
+      P_GET_UNIFM_LOC("fulltex", unifm_fulltex);
+#undef P_GET_UNIFM_LOC
+    }
+
+    free(extension);
+
+    // Restore LC_NUMERIC
+    setlocale(LC_NUMERIC, lc_numeric_old);
+    free(lc_numeric_old);
+  }
+
+  glx_check_err(ps);
+
+  return true;
+}
 #endif
 
 /**
@@ -820,6 +969,8 @@ glx_init_blur(session_t *ps) {
       return glx_init_conv_blur(ps);
     case BLRMTHD_DUALKAWASE:
       return glx_init_dualkawase_blur(ps);
+    case BLRMTHD_PIXEL:
+      return glx_init_pixelate_blur(ps);
     default:
       return false;
   }
@@ -1877,6 +2028,119 @@ glx_dualkawase_blur_dst_end:
 }
 
 /**
+ * Blur contents in a particular region using the pixelate 'blur'.
+ */
+bool
+glx_pixelate_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
+    XserverRegion reg_tgt, const reg_data_t *pcache_reg) {
+  assert(ps->psglx->blur_passes[0].prog);
+  const bool have_scissors = glIsEnabled(GL_SCISSOR_TEST);
+  const bool have_stencil = glIsEnabled(GL_STENCIL_TEST);
+  bool ret = false;
+
+  // TODO: get scale from config
+  int strength = 8;
+  //int max_scale = 0;
+  //for (max_scale = 1; max_scale < max_i(ps->root_width, ps->root_height); max_scale = max_scale << 1);
+  int scale = 1 << (12 - strength + 4);
+  int expand = max_i(ps->root_width, ps->root_height) / (double)scale;
+
+  // Calculate copy region size
+  int mdx = dx - expand, mdy = dy - expand, mwidth = width + 2 * expand, mheight = height + 2 * expand;
+#ifdef DEBUG_GLX
+  printf_dbgf("(): %d, %d, %d, %d\n", mdx, mdy, mwidth, mheight);
+#endif
+
+  glx_blur_cache_t *psbc = &ps->psglx->blur_cache;
+
+  GLenum tex_tgt = GL_TEXTURE_RECTANGLE;
+  if (ps->psglx->has_texture_non_power_of_two)
+    tex_tgt = GL_TEXTURE_2D;
+
+  // Check for FBO and textures
+  GLuint tex_scr = psbc->textures[0];
+  if (!tex_scr) {
+    printf_errf("(): Blur cache texture not allocated.");
+    goto glx_pixelate_blur_dst_end;
+  }
+
+  // Read destination pixels into a texture
+  glEnable(tex_tgt);
+  glBindTexture(tex_tgt, tex_scr);
+  glx_copy_region_to_tex(ps, tex_tgt, mdx, mdy, mwidth, mheight);
+
+  // Paint it back
+  //glDisable(GL_STENCIL_TEST);
+  //glDisable(GL_SCISSOR_TEST);
+
+  // Render Pixelate Shader
+  const glx_blur_pass_t *pixel_pass = &ps->psglx->blur_passes[0];
+    const int dest_width = psbc->width[0], dest_height = psbc->height[0];
+    GLuint tex_src2 = psbc->textures[0];
+
+    //assert(tex_src2);
+    glBindTexture(tex_tgt, tex_src2);
+
+    static const GLenum DRAWBUFS[2] = { GL_BACK };
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDrawBuffers(1, DRAWBUFS);
+    if (have_scissors)
+      glEnable(GL_SCISSOR_TEST);
+    if (have_stencil)
+      glEnable(GL_STENCIL_TEST);
+
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glUseProgram(pixel_pass->prog);
+    if (pixel_pass->unifm_offset >= 0)
+        glUniform1f(pixel_pass->unifm_offset, scale);
+    if (pixel_pass->unifm_fulltex >= 0)
+        glUniform2f(pixel_pass->unifm_fulltex, dest_width, dest_height);
+
+    // Start actual rendering
+    P_PAINTREG_START();
+    {
+      const GLfloat rx = crect.x - expand;
+      const GLfloat ry = ps->root_height - (crect.y + crect.height) - expand;
+      const GLfloat rxe = rx + crect.width + 2 * expand;
+      const GLfloat rye = ry + crect.height + 2 * expand;
+      GLfloat rdx = crect.x;
+      GLfloat rdy = ps->root_height - (crect.y + crect.height);
+      GLfloat rdxe = rdx + crect.width;
+      GLfloat rdye = rdy + crect.height;
+
+#ifdef DEBUG_GLX
+      printf_dbgf("(): Pixelate Pass: %f, %f, %f, %f -> %f, %f, %f, %f\n", rx, ry, rxe, rye, rdx, rdy, rdxe, rdye);
+#endif
+
+      glTexCoord2f(rx, ry);
+      glVertex3f(rdx, rdy, z);
+
+      glTexCoord2f(rxe, ry);
+      glVertex3f(rdxe, rdy, z);
+
+      glTexCoord2f(rxe, rye);
+      glVertex3f(rdxe, rdye, z);
+
+      glTexCoord2f(rx, rye);
+      glVertex3f(rdx, rdye, z);
+    }
+    P_PAINTREG_END();
+
+  glUseProgram(0);
+  ret = true;
+
+glx_pixelate_blur_dst_end:
+  glBindTexture(tex_tgt, 0);
+  glDisable(tex_tgt);
+  if (have_scissors)
+    glEnable(GL_SCISSOR_TEST);
+  if (have_stencil)
+    glEnable(GL_STENCIL_TEST);
+
+  return ret;
+}
+
+/**
  * Blur contents in a particular region using the selected blur algorithm.
  */
 bool
@@ -1893,6 +2157,10 @@ glx_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
       break;
     case BLRMTHD_DUALKAWASE:
       ret = glx_dualkawase_blur_dst(ps, dx, dy, width, height, z,
+        reg_tgt, pcache_reg);
+      break;
+    case BLRMTHD_PIXEL:
+      ret = glx_pixelate_blur_dst(ps, dx, dy, width, height, z,
         reg_tgt, pcache_reg);
       break;
     default:
