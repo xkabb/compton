@@ -1443,10 +1443,12 @@ win_blur_background(session_t *ps, win *w, Picture tgt_buffer,
   const int hei = w->heightb;
 
   double factor_center = 1.0;
+  double opacity = 1.0;
   // Adjust blur strength according to window opacity, to make it appear
   // better during fading
   if (!ps->o.blur_background_fixed) {
-    double pct = 1.0 - get_opacity_percent(w) * (1.0 - 1.0 / 9.0);
+    opacity = get_opacity_percent(w);
+    double pct = 1.0 - opacity * (1.0 - 1.0 / 9.0);
     factor_center = pct * 8.0 / (1.1 - pct);
   }
 
@@ -1509,7 +1511,7 @@ win_blur_background(session_t *ps, win *w, Picture tgt_buffer,
 #ifdef CONFIG_VSYNC_OPENGL_GLSL
     case BKEND_GLX:
       // TODO: Handle frame opacity
-      glx_blur_dst(ps, x, y, wid, hei, ps->psglx->z - 0.5, factor_center,
+      glx_blur_dst(ps, x, y, wid, hei, ps->psglx->z - 0.5, opacity,
           reg_paint, pcache_reg);
       break;
 #endif

@@ -109,7 +109,7 @@ glx_init(session_t *ps, bool need_render) {
       glx_blur_pass_t *ppass = &ps->psglx->blur_passes[i];
       ppass->unifm_offset_x = -1;
       ppass->unifm_offset_y = -1;
-      ppass->unifm_factor_center = -1;
+      ppass->unifm_opacity = -1;
       ppass->unifm_offset = -1;
       ppass->unifm_halfpixel = -1;
       ppass->unifm_fulltex = -1;
@@ -460,7 +460,7 @@ glx_init_conv_blur(session_t *ps) {
       "%s"
       "uniform float offset_x;\n"
       "uniform float offset_y;\n"
-      "uniform float factor_center;\n"
+      "uniform float opacity;\n"
       "uniform %s tex_scr;\n"
       "\n"
       "void main() {\n"
@@ -470,8 +470,9 @@ glx_init_conv_blur(session_t *ps) {
     static const char *FRAG_SHADER_BLUR_ADD_GPUSHADER4 =
       "  sum += float(%.7g) * %sOffset(tex_scr, vec2(gl_TexCoord[0].x, gl_TexCoord[0].y), ivec2(%d, %d));\n";
     static const char *FRAG_SHADER_BLUR_SUFFIX =
-      "  sum += %s(tex_scr, vec2(gl_TexCoord[0].x, gl_TexCoord[0].y)) * factor_center;\n"
-      "  gl_FragColor = sum / (factor_center + float(%.7g));\n"
+      "  sum += %s(tex_scr, vec2(gl_TexCoord[0].x, gl_TexCoord[0].y));\n"
+      "  gl_FragColor = sum / (float(%.7g));\n"
+      "  gl_FragColor.a = opacity;\n"
       "}\n";
 
     const bool use_texture_rect = !ps->psglx->has_texture_non_power_of_two;
@@ -511,7 +512,7 @@ glx_init_conv_blur(session_t *ps) {
           pc += strlen(pc);
           assert(strlen(shader_str) < len);
 
-          double sum = 0.0;
+          double sum = 1.0;
           for (int j = 0; j < hei; ++j) {
             for (int k = 0; k < wid; ++k) {
               if (hei / 2 == j && wid / 2 == k)
@@ -553,7 +554,7 @@ glx_init_conv_blur(session_t *ps) {
       } \
     }
 
-      P_GET_UNIFM_LOC("factor_center", unifm_factor_center);
+      P_GET_UNIFM_LOC("opacity", unifm_opacity);
       if (!ps->o.glx_use_gpushader4) {
         P_GET_UNIFM_LOC("offset_x", unifm_offset_x);
         P_GET_UNIFM_LOC("offset_y", unifm_offset_y);
@@ -658,6 +659,7 @@ glx_init_dualkawase_blur(session_t *ps) {
       "#version 110\n"
       "%s"  // extensions
       "uniform float offset;\n"
+      "uniform float opacity;\n"
       "uniform vec2 halfpixel;\n"
       "uniform vec2 fulltex;\n"
       "uniform %s tex_scr;\n" // sampler2D | sampler2DRect
@@ -695,6 +697,7 @@ glx_init_dualkawase_blur(session_t *ps) {
       "  sum += clamp_tex(uv + vec2(-halfpixel.x, -halfpixel.y) * offset) * 2.0;\n"
       "\n"
       "  gl_FragColor = sum / 12.0;\n"
+      "  gl_FragColor.a = opacity;\n"
       "}\n";
 
     const bool use_texture_rect = !ps->psglx->has_texture_non_power_of_two;
@@ -772,7 +775,7 @@ glx_init_dualkawase_blur(session_t *ps) {
       free(shader_str);
 
       if (!up_pass->frag_shader) {
-        printf_errf("(): Failed to create kawase upsample fragment shader.");
+        printf_errf("(): Failed to create dual_kawase upsample fragment shader.");
         return false;
       }
 
@@ -787,10 +790,11 @@ glx_init_dualkawase_blur(session_t *ps) {
 #define P_GET_UNIFM_LOC(name, target) { \
       up_pass->target = glGetUniformLocation(up_pass->prog, name); \
       if (up_pass->target < 0) { \
-        printf_errf("(): Failed to get location of kawase upsample uniform '" name "'. Might be troublesome."); \
+        printf_errf("(): Failed to get location of dual_kawase upsample uniform '" name "'. Might be troublesome."); \
       } \
     }
       P_GET_UNIFM_LOC("offset", unifm_offset);
+      P_GET_UNIFM_LOC("opacity", unifm_opacity);
       P_GET_UNIFM_LOC("halfpixel", unifm_halfpixel);
       P_GET_UNIFM_LOC("fulltex", unifm_fulltex);
 #undef P_GET_UNIFM_LOC
@@ -1480,7 +1484,7 @@ glx_copy_region_to_tex(session_t *ps, GLenum tex_tgt, int basex, int basey, int 
  */
 bool
 glx_conv_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
-    GLfloat factor_center,
+    double opacity,
     XserverRegion reg_tgt, const reg_data_t *pcache_reg) {
   assert(ps->psglx->blur_passes[0].prog);
   const bool more_passes = ps->psglx->blur_passes[1].prog;
@@ -1588,6 +1592,11 @@ glx_conv_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
         glEnable(GL_SCISSOR_TEST);
       if (have_stencil)
         glEnable(GL_STENCIL_TEST);
+
+      if (opacity < 1.0) { // Blend blur texture to fade in and out with window opacity
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      }
     }
 #endif
 
@@ -1602,8 +1611,8 @@ glx_conv_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
       glUniform1f(ppass->unifm_offset_x, texfac_x);
     if (ppass->unifm_offset_y >= 0)
       glUniform1f(ppass->unifm_offset_y, texfac_y);
-    if (ppass->unifm_factor_center >= 0)
-      glUniform1f(ppass->unifm_factor_center, factor_center);
+    if (ppass->unifm_opacity >= 0)
+      glUniform1f(ppass->unifm_opacity, (float)opacity);
 
     {
       P_PAINTREG_START();
@@ -1659,6 +1668,8 @@ glx_conv_blur_dst_end:
   if (have_stencil)
     glEnable(GL_STENCIL_TEST);
 
+  glDisable(GL_BLEND);
+
   glx_check_err(ps);
 
   return ret;
@@ -1669,6 +1680,7 @@ glx_conv_blur_dst_end:
  */
 bool
 glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
+    double opacity,
     XserverRegion reg_tgt, const reg_data_t *pcache_reg) {
   assert(ps->psglx->blur_passes[0].prog);
   assert(ps->psglx->blur_passes[1].prog);
@@ -1804,6 +1816,11 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
         glEnable(GL_SCISSOR_TEST);
       if (have_stencil)
         glEnable(GL_STENCIL_TEST);
+
+      if (opacity < 1.0) { // Blend blur texture to fade in and out with window opacity
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      }
     }
 #endif
 
@@ -1811,6 +1828,8 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
     glUseProgram(up_pass->prog);
     if (up_pass->unifm_offset >= 0)
         glUniform1f(up_pass->unifm_offset, offset);
+    if (up_pass->unifm_opacity >= 0)
+        glUniform1f(up_pass->unifm_opacity, (float)opacity);
     if (up_pass->unifm_halfpixel >= 0)
         glUniform2f(up_pass->unifm_halfpixel, 0.5 / dest_width, 0.5 / dest_height);
     if (up_pass->unifm_fulltex >= 0)
@@ -1873,6 +1892,8 @@ glx_dualkawase_blur_dst_end:
   if (have_stencil)
     glEnable(GL_STENCIL_TEST);
 
+  glDisable(GL_BLEND);
+
   return ret;
 }
 
@@ -1881,7 +1902,7 @@ glx_dualkawase_blur_dst_end:
  */
 bool
 glx_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
-    GLfloat factor_center,
+    double opacity,
     XserverRegion reg_tgt, const reg_data_t *pcache_reg) {
   assert(ps->psglx->blur_passes[0].prog);
 
@@ -1889,11 +1910,11 @@ glx_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
   switch (ps->o.blur_method) {
     case BLRMTHD_CONV:
       ret = glx_conv_blur_dst(ps, dx, dy, width, height, z,
-        factor_center, reg_tgt, pcache_reg);
+        opacity, reg_tgt, pcache_reg);
       break;
     case BLRMTHD_DUALKAWASE:
       ret = glx_dualkawase_blur_dst(ps, dx, dy, width, height, z,
-        reg_tgt, pcache_reg);
+        opacity, reg_tgt, pcache_reg);
       break;
     default:
       ret = false;

@@ -478,8 +478,8 @@ typedef struct {
   GLint unifm_offset_x;
   /// Location of uniform "offset_y" in conv-blur GLSL program.
   GLint unifm_offset_y;
-  /// Location of uniform "factor_center" in conv-blur GLSL program.
-  GLint unifm_factor_center;
+  /// Location of uniform "opacity" in conv-blur and (dual filter) kawase-blur GLSL program.
+  GLint unifm_opacity;
   /// Location of uniform "offset" in (dual filter) kawase-blur GLSL program.
   GLint unifm_offset;
   /// Location of uniform "halfpixel" in (dual filter) kawase-blur GLSL program.
@@ -2271,7 +2271,7 @@ glx_set_clip(session_t *ps, XserverRegion reg, const reg_data_t *pcache_reg);
 #ifdef CONFIG_VSYNC_OPENGL_GLSL
 bool
 glx_blur_dst(session_t *ps, int dx, int dy, int width, int height, float z,
-    GLfloat factor_center,
+    double opacity,
     XserverRegion reg_tgt, const reg_data_t *pcache_reg);
 #endif
 
