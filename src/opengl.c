@@ -696,8 +696,8 @@ glx_init_dualkawase_blur(session_t *ps) {
       "  sum += clamp_tex(uv + vec2(0.0, -halfpixel.y * 2.0) * offset);\n"
       "  sum += clamp_tex(uv + vec2(-halfpixel.x, -halfpixel.y) * offset) * 2.0;\n"
       "\n"
-      "  gl_FragColor = sum / 12.0;\n"
-      "  gl_FragColor.a = opacity;\n"
+      "  gl_FragColor = sum / 12.0;// * clamp(2.0 * opacity, 0.0, 1.0);\n"
+      "  gl_FragColor.a = clamp(5.0 * opacity, 0.0, 1.0);\n"
       "}\n";
 
     const bool use_texture_rect = !ps->psglx->has_texture_non_power_of_two;
@@ -1675,6 +1675,8 @@ glx_conv_blur_dst_end:
   return ret;
 }
 
+#include <math.h>
+
 /**
  * Blur contents in a particular region using the dual-filter kawase blur.
  */
@@ -1688,9 +1690,20 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
   const bool have_stencil = glIsEnabled(GL_STENCIL_TEST);
   bool ret = false;
 
+  // HACK: reduce blur_strength level according to opacitiy
+  //int old_level = ps->o.blur_strength.level;
+  //if (opacity < 1.0) {
+  //  int new_level = ceil(old_level * opacity);
+  //  parse_blur_strength(ps, new_level);
+  //}
+
   int iterations = ps->o.blur_strength.iterations;
   float offset = ps->o.blur_strength.offset;
   int expand = ps->o.blur_strength.expand;
+
+  //if (opacity < 1.0) {
+  //  parse_blur_strength(ps, old_level);
+  //}
 
   // Calculate copy region size
   int mdx = dx - expand, mdy = dy - expand, mwidth = width + 2 * expand, mheight = height + 2 * expand;
@@ -1803,6 +1816,7 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
     //assert(tex_src2);
     glBindTexture(tex_tgt, tex_src2);
 
+    float output_opacity = 1.0;
 #ifdef CONFIG_VSYNC_OPENGL_FBO
     if (i != 1) { // is not last pass
       GLuint fbo = psbc->fbos[i - 2];
@@ -1818,6 +1832,7 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
         glEnable(GL_STENCIL_TEST);
 
       if (opacity < 1.0) { // Blend blur texture to fade in and out with window opacity
+        output_opacity = opacity;
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       }
@@ -1828,12 +1843,12 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
     glUseProgram(up_pass->prog);
     if (up_pass->unifm_offset >= 0)
         glUniform1f(up_pass->unifm_offset, offset);
-    if (up_pass->unifm_opacity >= 0)
-        glUniform1f(up_pass->unifm_opacity, (float)opacity);
     if (up_pass->unifm_halfpixel >= 0)
         glUniform2f(up_pass->unifm_halfpixel, 0.5 / dest_width, 0.5 / dest_height);
     if (up_pass->unifm_fulltex >= 0)
         glUniform2f(up_pass->unifm_fulltex, dest_width, dest_height);
+    if (up_pass->unifm_opacity >= 0)
+        glUniform1f(up_pass->unifm_opacity, output_opacity);
 
     // Start actual rendering
     P_PAINTREG_START();
