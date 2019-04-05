@@ -696,8 +696,12 @@ glx_init_dualkawase_blur(session_t *ps) {
       "  sum += clamp_tex(uv + vec2(0.0, -halfpixel.y * 2.0) * offset);\n"
       "  sum += clamp_tex(uv + vec2(-halfpixel.x, -halfpixel.y) * offset) * 2.0;\n"
       "\n"
-      "  gl_FragColor = sum / 12.0;// * clamp(2.0 * opacity, 0.0, 1.0);\n"
+      "  gl_FragColor = sum / 12.0;\n"
+#if BLUR_RANGE == 1
       "  gl_FragColor.a = clamp(5.0 * opacity, 0.0, 1.0);\n"
+#elif BLUR_RANGE == 2
+      "  gl_FragColor.a = clamp(opacity, 0.0, 1.0);\n"
+#endif
       "}\n";
 
     const bool use_texture_rect = !ps->psglx->has_texture_non_power_of_two;
@@ -1690,20 +1694,24 @@ glx_dualkawase_blur_dst(session_t *ps, int dx, int dy, int width, int height, fl
   const bool have_stencil = glIsEnabled(GL_STENCIL_TEST);
   bool ret = false;
 
+#ifdef BLUR_HACK
   // HACK: reduce blur_strength level according to opacitiy
-  //int old_level = ps->o.blur_strength.level;
-  //if (opacity < 1.0) {
-  //  int new_level = ceil(old_level * opacity);
-  //  parse_blur_strength(ps, new_level);
-  //}
+  int old_level = ps->o.blur_strength.level;
+  if (opacity < 1.0) {
+    int new_level = ceil(old_level * opacity);
+    parse_blur_strength(ps, new_level);
+  }
+#endif
 
   int iterations = ps->o.blur_strength.iterations;
   float offset = ps->o.blur_strength.offset;
   int expand = ps->o.blur_strength.expand;
 
-  //if (opacity < 1.0) {
-  //  parse_blur_strength(ps, old_level);
-  //}
+#ifdef BLUR_HACK
+  if (opacity < 1.0) {
+    parse_blur_strength(ps, old_level);
+  }
+#endif
 
   // Calculate copy region size
   int mdx = dx - expand, mdy = dy - expand, mwidth = width + 2 * expand, mheight = height + 2 * expand;
